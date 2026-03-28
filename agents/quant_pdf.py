@@ -13,6 +13,7 @@ import sys
 import os
 import json
 import warnings
+from datetime import datetime
 warnings.filterwarnings('ignore')
 
 import numpy as np
@@ -41,6 +42,47 @@ INITIAL_INVESTMENT = 100000  # 10万
 
 MINIMAX_PDF = '/Users/claudecodedezhuanshumac/.minimax-skills/skills/minimax-pdf/scripts'
 TMP_DIR = '/tmp'
+
+# ============== 股票代码验证 ==============
+KNOWN_STOCKS = {
+    # 银行股
+    'sh.601398': '工商银行',
+    'sh.601288': '农业银行',
+    'sh.601988': '中国银行',
+    'sh.601328': '交通银行',
+    'sh.600000': '浦发银行',
+    'sh.600036': '招商银行',
+    'sh.601166': '兴业银行',
+    'sh.600016': '民生银行',
+    'sh.601169': '北京银行',
+    'sh.600015': '华夏银行',
+    'sh.601818': '光大银行',
+    'sh.601328': '交通银行',
+    'sh.601838': '成都银行',
+    'sh.600926': '杭州银行',
+    'sh.600919': '江苏银行',
+    'sh.601009': '南京银行',
+    'sz.002142': '宁波银行',
+    'sz.002807': '江阴银行',
+    'sz.002839': '张家港行',
+    # 电力股
+    'sh.600900': '长江电力',
+    'sh.600905': '三峡能源',
+    # 家电股
+    'sz.000921': '海信家电',
+    # 化工股
+    'sh.600309': '万华化学',
+}
+
+def validate_stock_code(code, name):
+    """验证股票代码与名称是否匹配"""
+    if code in KNOWN_STOCKS:
+        expected_name = KNOWN_STOCKS[code]
+        if name != expected_name:
+            print(f'   ⚠️  警告: 代码 {code} 对应 "{expected_name}"，而非 "{name}"')
+            print(f'   ⚠️  已自动修正为: {expected_name}')
+            return expected_name
+    return name
 
 # ============== Baostock 数据获取 ==============
 def login_baostock():
@@ -130,10 +172,14 @@ def fetch_eps_data(code, years=10):
 
 # ============== 分析函数 ==============
 def run_analysis():
+    global STOCK_NAME
     print(f'\n{"="*60}')
     print(f'🚀 Quant Agent Workflow 启动')
     print(f'   股票: {STOCK_NAME} ({STOCK_CODE})')
     print(f'{"="*60}')
+
+    # 验证并修正股票名称
+    STOCK_NAME = validate_stock_code(STOCK_CODE, STOCK_NAME)
 
     login_baostock()
 
@@ -171,17 +217,74 @@ def run_analysis():
             print(f"   {label}: 剔除{removed}个极端值")
         return data[mask], mask
 
-    def remove_outliers_zscore(data, threshold=2.5, label="数据"):
-        """使用Z-score方法剔除极端值"""
-        z = np.abs((data - np.mean(data)) / np.std(data))
-        mask = z < threshold
-        if mask.sum() < len(data) * 0.7:
-            print(f"   警告: {label}异常值过多({len(data)-mask.sum()}个)，保留全部数据")
-            return data, np.ones(len(data), dtype=bool)
-        removed = len(data) - mask.sum()
-        if removed > 0:
-            print(f"   {label}: 剔除{removed}个极端值 (Z>{threshold})")
-        return data[mask], mask
+    def remove_outliers_cooks_d(X, y, years_count, label="数据"):
+        """
+        使用Cook's Distance方法剔除极端值：删除对拟合影响最大的点
+
+        规则：
+        - 10年数据：最多删2年
+        - 5年数据：最多删1年
+        - 少于5年：不得删除
+        - Cook's D阈值：4/n（n为样本数）
+        - 只删除 Cook's D 最大的点
+        """
+        n = len(y)
+        # 计算可删除上限
+        if years_count >= 10:
+            max_removable = 2
+        elif years_count >= 5:
+            max_removable = 1
+        else:
+            max_removable = 0
+
+        if max_removable == 0:
+            return X, y, np.ones(n, dtype=bool), 0, []
+
+        # 构建X矩阵（加截距）
+        X_with_intercept = np.column_stack([np.ones(n), X])
+        # OLS回归
+        beta = np.linalg.lstsq(X_with_intercept, y, rcond=None)[0]
+        y_pred = X_with_intercept @ beta
+        residuals = y - y_pred
+        # MSE
+        mse = np.sum(residuals**2) / (n - 2) if n > 2 else np.var(residuals)
+        if mse == 0:
+            return X, y, np.ones(n, dtype=bool), 0, []
+
+        # Hat matrix diagonal (leverage)
+        H = X_with_intercept @ np.linalg.inv(X_with_intercept.T @ X_with_intercept) @ X_with_intercept.T
+        h = np.diag(H)
+
+        # Cook's Distance for each point
+        cooks_d = np.zeros(n)
+        for i in range(n):
+            if h[i] >= 1:
+                cooks_d[i] = np.inf
+            else:
+                se = mse * (1 - h[i])
+                if se > 0:
+                    cooks_d[i] = (residuals[i]**2 / (2 * mse)) * (h[i] / (1 - h[i])**2)
+
+        # 检查是否有超过阈值的点
+        threshold = 4 / n
+        if np.max(cooks_d) <= threshold:
+            return X, y, np.ones(n, dtype=bool), 0, []
+
+        # 找到Cook's D最大的点
+        idx_remove = np.argmax(cooks_d)
+        mask = np.ones(n, dtype=bool)
+        mask[idx_remove] = False
+
+        # 检查保留比例
+        if mask.sum() < n * 0.8:
+            print(f"   警告: {label}保留不足80%，不删除")
+            return X, y, np.ones(n, dtype=bool), 0, []
+
+        removed_count = 1
+        removed_years = [idx_remove]
+        cooks_max = cooks_d[idx_remove]
+        print(f"   {label}: 剔除{removed_count}个极端值 (Cook's D={cooks_max:.4f}>{threshold:.4f}), 保留{int(mask.sum()/n*100)}%")
+        return X[mask], y[mask], mask, removed_count, removed_years
 
     # ========== 双耦合测试 ==========
 
@@ -213,37 +316,65 @@ def run_analysis():
     r_squared_eps = r_eps ** 2
     test2_eps_pass_initial = r_squared_eps >= 0.6
 
-    # 如果首次拟合不通过，剔除极端值后重试
+    # 如果首次拟合不通过，用Cook's Distance剔除极端值后重试（只删最大影响点，不回退）
     outlier_removed_div = False
     outlier_removed_eps = False
+    outlier_info_div = {"removed": False, "count": 0, "years_removed": [], "mask": np.ones(n_div, dtype=bool)}
+    outlier_info_eps = {"removed": False, "count": 0, "years_removed": [], "mask": np.ones(n_eps, dtype=bool)}
+
+    # 初始CAGR（全部数据）
+    cagr_p_div_initial = (prices[-1] / prices[0]) ** (1 / (n_div - 1)) - 1
+    cagr_d_initial = (dividends[-1] / dividends[0]) ** (1 / (n_div - 1)) - 1
+    deviation_div_initial = abs(cagr_p_div_initial - cagr_d_initial)
+
+    cagr_p_eps_initial = (prices_eps[-1] / prices_eps[0]) ** (1 / (n_eps - 1)) - 1
+    cagr_eps_initial = (eps_values[-1] / eps_values[0]) ** (1 / (n_eps - 1)) - 1
+    deviation_eps_initial = abs(cagr_p_eps_initial - cagr_eps_initial)
 
     if not test2_div_pass_initial:
-        print("   分红回归: 首次未通过，剔除极端值后重试")
         ln_p_div_all = np.log(prices)
         ln_d_all = np.log(dividends)
-        _, mask_p_div = remove_outliers_zscore(ln_p_div_all, threshold=2.5, label="股价")
-        _, mask_d = remove_outliers_zscore(ln_d_all, threshold=2.5, label="分红")
-        mask_div = mask_p_div & mask_d
-        if mask_div.sum() >= len(prices) * 0.7:
-            ln_p_div = ln_p_div_all[mask_div]
-            ln_d = ln_d_all[mask_div]
-            slope_div, _, r_div, _, _ = stats.linregress(ln_d, ln_p_div)
+        _, _, mask_div, cnt_div, yrs_div = remove_outliers_cooks_d(ln_d_all, ln_p_div_all, n_div, label="分红")
+        if cnt_div > 0:
+            print(f"   分红回归: Cook's D剔除{cnt_div}个极端值后重试")
+            slope_div, _, r_div, _, _ = stats.linregress(ln_d_all[mask_div], ln_p_div_all[mask_div])
             r_squared_div = r_div ** 2
+            # CAGR也用剔除后的数据重新计算
+            prices_div_masked = prices[mask_div]
+            dividends_masked = dividends[mask_div]
+            if len(prices_div_masked) >= 2:
+                cagr_p_div = (prices_div_masked[-1] / prices_div_masked[0]) ** (1 / (len(prices_div_masked) - 1)) - 1
+                cagr_d = (dividends_masked[-1] / dividends_masked[0]) ** (1 / (len(dividends_masked) - 1)) - 1
+                deviation_div = abs(cagr_p_div - cagr_d)
             outlier_removed_div = True
+            outlier_info_div = {"removed": True, "count": cnt_div, "years_removed": yrs_div, "mask": mask_div}
+        else:
+            print(f"   分红回归: Cook's D无超标点，保持{len(ln_d_all)}年数据重试")
 
     if not test2_eps_pass_initial:
-        print("   EPS回归: 首次未通过，剔除极端值后重试")
         ln_p_eps_all = np.log(prices_eps)
         ln_eps_all = np.log(eps_values)
-        _, mask_p_eps = remove_outliers_zscore(ln_p_eps_all, threshold=2.5, label="股价")
-        _, mask_eps = remove_outliers_zscore(ln_eps_all, threshold=2.5, label="EPS")
-        mask_eps_combined = mask_p_eps & mask_eps
-        if mask_eps_combined.sum() >= len(prices_eps) * 0.7:
-            ln_p_eps = ln_p_eps_all[mask_eps_combined]
-            ln_eps = ln_eps_all[mask_eps_combined]
-            slope_eps, _, r_eps, _, _ = stats.linregress(ln_eps, ln_p_eps)
+        _, _, mask_eps, cnt_eps, yrs_eps = remove_outliers_cooks_d(ln_eps_all, ln_p_eps_all, n_eps, label="EPS")
+        if cnt_eps > 0:
+            print(f"   EPS回归: Cook's D剔除{cnt_eps}个极端值后重试")
+            slope_eps, _, r_eps, _, _ = stats.linregress(ln_eps_all[mask_eps], ln_p_eps_all[mask_eps])
             r_squared_eps = r_eps ** 2
+            # CAGR也用剔除后的数据重新计算
+            prices_eps_masked = prices_eps[mask_eps]
+            eps_masked = eps_values[mask_eps]
+            if len(prices_eps_masked) >= 2:
+                cagr_p_eps = (prices_eps_masked[-1] / prices_eps_masked[0]) ** (1 / (len(prices_eps_masked) - 1)) - 1
+                cagr_eps = (eps_masked[-1] / eps_masked[0]) ** (1 / (len(eps_masked) - 1)) - 1
+                deviation_eps = abs(cagr_p_eps - cagr_eps)
             outlier_removed_eps = True
+            outlier_info_eps = {"removed": True, "count": cnt_eps, "years_removed": yrs_eps, "mask": mask_eps}
+        else:
+            print(f"   EPS回归: Cook's D无超标点，保持{len(ln_eps_all)}年数据重试")
+
+    # Cook's D 剔除后重新计算 test1（偏离度），因为 deviation 已更新
+    test1_div_pass = deviation_div < 0.05
+    test1_eps_pass = deviation_eps < 0.05
+    test1_pass = test1_div_pass or test1_eps_pass  # 单一耦合通过即可
 
     test2_div_pass = r_squared_div >= 0.6
     test2_eps_pass = r_squared_eps >= 0.6
@@ -264,11 +395,13 @@ def run_analysis():
     print(f'\n📊 Phase 2: 双耦合验证测试')
     print(f'   --- 分红-股价耦合 ---')
     print(f'   测试一: CAGR偏离度 {"✅" if test1_div_pass else "❌"} (偏离度: {deviation_div*100:.2f}%)')
-    print(f'   测试二: β与R² {"✅" if test2_div_pass else "❌"} (R²={r_squared_div:.4f}){" [剔除极端值后]" if outlier_removed_div else ""}')
+    cook_flag_div = " [CookD剔除后]" if outlier_removed_div else ""
+    print(f'   测试二: β与R² {"✅" if test2_div_pass else "❌"} (R²={r_squared_div:.4f}){cook_flag_div}')
     print(f'   --- EPS-股价耦合 ---')
     print(f'   测试一: CAGR偏离度 {"✅" if test1_eps_pass else "❌"} (偏离度: {deviation_eps*100:.2f}%)')
-    print(f'   测试二: β与R² {"✅" if test2_eps_pass else "❌"} (R²={r_squared_eps:.4f}){" [剔除极端值后]" if outlier_removed_eps else ""}')
-    print(f'   --- Z-score ---')
+    cook_flag_eps = " [CookD剔除后]" if outlier_removed_eps else ""
+    print(f'   测试二: β与R² {"✅" if test2_eps_pass else "❌"} (R²={r_squared_eps:.4f}){cook_flag_eps}')
+    print(f'   --- Z-score(PE) ---')
     print(f'   测试三: Z-score {"✅" if test3_pass else "❌"} (Z={z_score:.2f})')
 
     # 判决
@@ -362,7 +495,8 @@ def run_analysis():
         'g': g, 'y': y, 'd0': d0, 'p0': current_price,
         'median': median, 'double_prob': double_prob, 'loss_prob': loss_prob, 'var_5': var_5,
         'verdict': verdict, 'results': results,
-        'can_predict': can_predict, 'predict_reason': predict_reason
+        'can_predict': can_predict, 'predict_reason': predict_reason,
+        'outlier_info_div': outlier_info_div, 'outlier_info_eps': outlier_info_eps
     }
 
 # ============== 可视化 ==============
@@ -399,8 +533,20 @@ def generate_charts(data):
     # Chart 2: 分红-股价对数趋势图
     fig, ax1 = plt.subplots(figsize=(10, 5))
     ax2 = ax1.twinx()
-    ax1.plot(merged_div['year'], np.log(merged_div['price']), 'o-', color='tab:blue', linewidth=2, label='ln(股价)')
-    ax2.plot(merged_div['year'], np.log(merged_div['dividend']), 's--', color='tab:red', linewidth=2, label='ln(分红)')
+    div_years = merged_div['year'].values
+    outlier_info_div = data.get('outlier_info_div', {})
+    if outlier_info_div.get('removed'):
+        mask = outlier_info_div['mask']
+        removed_idx = [i for i in range(len(mask)) if not mask[i]]
+        removed_years_div = div_years[removed_idx]
+        ln_price_masked = np.log(merged_div['price'].values)[mask]
+        ln_div_masked = np.log(merged_div['dividend'].values)[mask]
+        ax1.plot(merged_div['year'].values[mask], ln_price_masked, 'o-', color='tab:blue', linewidth=2, label='ln(股价)')
+        ax2.plot(merged_div['year'].values[mask], ln_div_masked, 's--', color='tab:red', linewidth=2, label='ln(分红)')
+        ax1.scatter(merged_div['year'].values[~mask], np.log(merged_div['price'].values)[~mask], s=150, color='tab:red', marker='X', zorder=5, label=f'剔除 {list(removed_years_div)}')
+    else:
+        ax1.plot(merged_div['year'], np.log(merged_div['price']), 'o-', color='tab:blue', linewidth=2, label='ln(股价)')
+        ax2.plot(merged_div['year'], np.log(merged_div['dividend']), 's--', color='tab:red', linewidth=2, label='ln(分红)')
     ax1.set_ylabel('ln(股价)', color='tab:blue')
     ax2.set_ylabel('ln(分红)', color='tab:red')
     ax1.set_xlabel('年份')
@@ -414,8 +560,18 @@ def generate_charts(data):
     # Chart 3: EPS-股价对数趋势图
     fig, ax1 = plt.subplots(figsize=(10, 5))
     ax2 = ax1.twinx()
-    ax1.plot(merged_eps['year'], np.log(merged_eps['price']), 'o-', color='tab:blue', linewidth=2, label='ln(股价)')
-    ax2.plot(merged_eps['year'], np.log(merged_eps['eps']), 's--', color='tab:green', linewidth=2, label='ln(EPS)')
+    eps_years = merged_eps['year'].values
+    outlier_info_eps = data.get('outlier_info_eps', {})
+    if outlier_info_eps.get('removed'):
+        mask_eps = outlier_info_eps['mask']
+        removed_idx_eps = [i for i in range(len(mask_eps)) if not mask_eps[i]]
+        removed_years_eps = eps_years[removed_idx_eps]
+        ax1.plot(merged_eps['year'].values[mask_eps], np.log(merged_eps['price'].values)[mask_eps], 'o-', color='tab:blue', linewidth=2, label='ln(股价)')
+        ax2.plot(merged_eps['year'].values[mask_eps], np.log(merged_eps['eps'].values)[mask_eps], 's--', color='tab:green', linewidth=2, label='ln(EPS)')
+        ax1.scatter(merged_eps['year'].values[~mask_eps], np.log(merged_eps['price'].values)[~mask_eps], s=150, color='tab:red', marker='X', zorder=5, label=f'剔除 {list(removed_years_eps)}')
+    else:
+        ax1.plot(merged_eps['year'], np.log(merged_eps['price']), 'o-', color='tab:blue', linewidth=2, label='ln(股价)')
+        ax2.plot(merged_eps['year'], np.log(merged_eps['eps']), 's--', color='tab:green', linewidth=2, label='ln(EPS)')
     ax1.set_ylabel('ln(股价)', color='tab:blue')
     ax2.set_ylabel('ln(EPS)', color='tab:green')
     ax1.set_xlabel('年份')
@@ -429,10 +585,22 @@ def generate_charts(data):
     # Chart 4: 分红弹性回归散点图
     ln_p_div = np.log(merged_div['price'].values)
     ln_d = np.log(merged_div['dividend'].values)
+    div_years = merged_div['year'].values
     slope_div, intercept_div, r_div, _, _ = stats.linregress(ln_d, ln_p_div)
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(ln_d, ln_p_div, s=80, alpha=0.7, color='tab:red', label='年度数据')
+    outlier_info = data.get('outlier_info_div', {})
+    if outlier_info.get('removed'):
+        mask = outlier_info['mask']
+        removed_idx = [i for i in range(len(mask)) if not mask[i]]
+        removed_years = div_years[removed_idx]
+        # 保留的点
+        ax.scatter(ln_d[mask], ln_p_div[mask], s=80, alpha=0.7, color='tab:blue', label='保留数据')
+        # 被剔除的点
+        ax.scatter(ln_d[~mask], ln_p_div[~mask], s=120, alpha=0.9, color='tab:red', marker='X', label=f'Cook\'s D剔除 ({list(removed_years)})')
+        ax.legend(loc='lower right')
+    else:
+        ax.scatter(ln_d, ln_p_div, s=80, alpha=0.7, color='tab:blue', label='年度数据')
     x_line = np.linspace(ln_d.min(), ln_d.max(), 100)
     ax.plot(x_line, slope_div * x_line + intercept_div, 'r-', linewidth=2)
     ax.set_xlabel('ln(分红)')
@@ -449,10 +617,22 @@ def generate_charts(data):
     # Chart 5: EPS弹性回归散点图
     ln_p_eps = np.log(merged_eps['price'].values)
     ln_eps = np.log(merged_eps['eps'].values)
+    eps_years = merged_eps['year'].values
     slope_eps, intercept_eps, r_eps, _, _ = stats.linregress(ln_eps, ln_p_eps)
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(ln_eps, ln_p_eps, s=80, alpha=0.7, color='tab:green', label='年度数据')
+    outlier_info_eps = data.get('outlier_info_eps', {})
+    if outlier_info_eps.get('removed'):
+        mask_eps = outlier_info_eps['mask']
+        removed_idx_eps = [i for i in range(len(mask_eps)) if not mask_eps[i]]
+        removed_years_eps = eps_years[removed_idx_eps]
+        # 保留的点
+        ax.scatter(ln_eps[mask_eps], ln_p_eps[mask_eps], s=80, alpha=0.7, color='tab:blue', label='保留数据')
+        # 被剔除的点
+        ax.scatter(ln_eps[~mask_eps], ln_p_eps[~mask_eps], s=120, alpha=0.9, color='tab:red', marker='X', label=f'Cook\'s D剔除 ({list(removed_years_eps)})')
+        ax.legend(loc='lower right')
+    else:
+        ax.scatter(ln_eps, ln_p_eps, s=80, alpha=0.7, color='tab:green', label='年度数据')
     x_line = np.linspace(ln_eps.min(), ln_eps.max(), 100)
     ax.plot(x_line, slope_eps * x_line + intercept_eps, 'g-', linewidth=2)
     ax.set_xlabel('ln(EPS)')
@@ -579,23 +759,50 @@ def generate_pdf(data):
     else:
         verdict_diagnosis = "多项测试未通过，需谨慎评估。DRIP效果取决于后续耦合修复。"
 
-    # 构建PDF内容
+    # Cook's D 剔除记录
+    outlier_div_text = ""
+    outlier_eps_text = ""
+    if data.get('outlier_info_div', {}).get('removed'):
+        info = data['outlier_info_div']
+        outlier_div_text = f"\n⚠️ Cook's D剔除: 删{data['merged_div']['year'].iloc[info['years_removed']].tolist()}"
+    if data.get('outlier_info_eps', {}).get('removed'):
+        info = data['outlier_info_eps']
+        outlier_eps_text = f"\n⚠️ Cook's D剔除: 删{data['merged_eps']['year'].iloc[info['years_removed']].tolist()}"
+
+    # 方法论说明（精简版）
+    div_eps_note = (
+        "【弹性回归】ln(P)=β·ln(D)+α，β≈1表示分红与股价同步增长。R²衡量基本面解释力。\n"
+        "【CAGR检验】验证增长速率同步：|CAGR_P - CAGR_D| < 5%。"
+    )
+    eps_coupling_note = "【EPS耦合】成长型股票（化工/电子/新能源）由EPS驱动股价，不同于成熟型的分红驱动。"
+    zscore_note = "【Z-score】(当前PE-均值)/标准差，Z≤1.5为正常估值，Z<-1为低估提供安全边际。"
+
+    # 核心结论（前置显示）
+    if data['can_predict']:
+        verdict_banner = f"🎯 {data['verdict']} | 预期收益: {data['median']:.0%} | 亏损风险: {data['loss_prob']*100:.0f}%"
+    else:
+        verdict_banner = f"⚠️ {data['verdict']}"
+
     content = [
         {"type": "h1", "text": f"{STOCK_NAME} DRIP量化分析报告"},
-        {"type": "body", "text": f"股票代码: {STOCK_CODE} | 分析周期: {YEARS}年 (2017-2026)<br/>当前股价: {data['p0']:.2f}元 | 当前PE: {data['current_pe']:.2f} | 股息率: {data['y']*100:.2f}%"},
+        {"type": "body", "text": f"股票代码: {STOCK_CODE} | 分析周期: {YEARS}年 | 股价: {data['p0']:.2f}元 | PE: {data['current_pe']:.2f} | 股息率: {data['y']*100:.2f}%"},
+        {"type": "callout", "text": verdict_banner},
         {"type": "h2", "text": "一、数据概况"},
         {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_股价走势图.png", "caption": "10年股价走势与最大回撤分析"},
         {"type": "h2", "text": "二、双耦合验证测试"},
         {"type": "h3", "text": "2.1 分红-股价耦合"},
-        {"type": "callout", "text": f"CAGR偏离度: {'✅ 通过' if data['test1_div_pass'] else '❌ 未通过'} (偏离度: {data['deviation_div']*100:.2f}%)\nR²: {'✅ 通过' if data['test2_div_pass'] else '❌ 未通过'} ({data['r_squared_div']:.4f})\n\n诊断: {div_diagnosis}"},
+        {"type": "callout", "text": f"CAGR偏离度: {'✅ 通过' if data['test1_div_pass'] else '❌ 未通过'} (偏离度: {data['deviation_div']*100:.2f}%)\nR²: {'✅ 通过' if data['test2_div_pass'] else '❌ 未通过'} ({data['r_squared_div']:.4f}){outlier_div_text}\n\n诊断: {div_diagnosis}"},
+        {"type": "note", "text": div_eps_note},
         {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_分红对数趋势图.png", "caption": "分红-股价对数趋势图"},
         {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_分红回归散点图.png", "caption": "分红弹性回归散点图"},
         {"type": "h3", "text": "2.2 EPS-股价耦合"},
-        {"type": "callout", "text": f"CAGR偏离度: {'✅ 通过' if data['test1_eps_pass'] else '❌ 未通过'} (偏离度: {data['deviation_eps']*100:.2f}%)\nR²: {'✅ 通过' if data['test2_eps_pass'] else '❌ 未通过'} ({data['r_squared_eps']:.4f})\n\n诊断: {eps_diagnosis}"},
+        {"type": "callout", "text": f"CAGR偏离度: {'✅ 通过' if data['test1_eps_pass'] else '❌ 未通过'} (偏离度: {data['deviation_eps']*100:.2f}%)\nR²: {'✅ 通过' if data['test2_eps_pass'] else '❌ 未通过'} ({data['r_squared_eps']:.4f}){outlier_eps_text}\n\n诊断: {eps_diagnosis}"},
+        {"type": "note", "text": eps_coupling_note},
         {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_EPS对数趋势图.png", "caption": "EPS-股价对数趋势图"},
         {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_EPS回归散点图.png", "caption": "EPS弹性回归散点图"},
         {"type": "h3", "text": "2.3 综合Z-score测试"},
         {"type": "callout", "text": f"Z-score: {'✅ 通过' if data['test3_pass'] else '❌ 未通过'} (Z={data['z_score']:.2f})\n当前PE({data['current_pe']:.2f}) vs 历史均值({data['pe_mean']:.2f})\n\n诊断: {pe_diagnosis}"},
+        {"type": "note", "text": zscore_note},
         {"type": "h2", "text": "三、估值健康度"},
         {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_PE_Band图.png", "caption": "10年PE Band通道图"},
     ]
@@ -621,14 +828,12 @@ def generate_pdf(data):
             ], "col_widths": [0.25, 0.2, 0.35]},
             {"type": "figure", "path": f"{TMP_DIR}/{STOCK_NAME}_drip_高级分布图.png", "caption": f"DRIP {SIM_YEARS}年期概率分布"},
             {"type": "h2", "text": "五、定性判决"},
-            {"type": "callout", "text": f"🎉 {data['verdict']}\n\n{verdict_diagnosis}\n\n{SIM_YEARS}年DRIP预期: {data['median']:.0%}收益 | 亏损概率: {data['loss_prob']*100:.0f}%"},
+            {"type": "callout", "text": f"✅ {data['verdict']}\n\n{verdict_diagnosis}"},
         ])
     else:
         content.extend([
             {"type": "h2", "text": "四、无法预测"},
-            {"type": "callout", "text": f"⚠️ {data['verdict']}\n\n{data['predict_reason']}\n\n历史数据不足以支撑DRIP蒙特卡洛模拟。\n\n可能原因：\n• 股价与基本面严重背离（R²偏低）\n• 行业周期性过强（证券、能源等）\n• 数据异常/不连续（如新股分红起步晚）\n\n建议：该标的不适合DRIP策略，请选择其他完美耦合型股票。"},
-            {"type": "h2", "text": "五、定性判决"},
-            {"type": "callout", "text": f"❌ {data['verdict']}\n\n{verdict_diagnosis}\n\n该标的暂不适合DRIP策略。"},
+            {"type": "callout", "text": f"⚠️ {data['verdict']}\n\n{data['predict_reason']}\n\n可能原因：\n• 股价与基本面严重背离（R²偏低）\n• 行业周期性过强（证券、能源等）\n• 数据异常/不连续（如新股分红起步晚）\n\n建议：该标的不适合DRIP策略，请选择其他完美耦合型股票。"},
         ])
 
     content.extend([
@@ -645,7 +850,7 @@ def generate_pdf(data):
     os.system(f'cd {MINIMAX_PDF} && python3 palette.py '
                f'--title "{STOCK_NAME} DRIP量化分析报告" '
                f'--type report --author "Quant Agent" '
-               f'--date "2026-03-27" --accent "#E8A020" '
+               f'--date "{datetime.now().strftime("%Y-%m-%d")}" --accent "#E8A020" '
                f'--out {tokens_path} 2>/dev/null')
 
     # 添加中文字体到 tokens

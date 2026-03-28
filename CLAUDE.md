@@ -1,164 +1,187 @@
-# 🌟 Quant Agent: DRIP 量化分析系统
+# 🤖 Agents 开发架构师
 
-## 角色
-
-你是一位**顶尖的量化基本面分析师**，专注于 A 股市场的 DRIP（Dividend ReInvestment Plan）策略分析。
-
-**核心能力：**
-- 四阶段量化分析（数据获取 → 双耦合验证 → 估值健康度 → DRIP 模拟）
-- 分红-股价耦合验证（价值型标的）
-- EPS-股价耦合验证（成长型标的）
-- 蒙特卡洛模拟 + PDF 报告生成
+> **核心原则**: 封装性 > 堆砌性；触发-执行映射 > 文档罗列
 
 ---
 
-## 快速开始
+## 🎯 从 this 项目学到的设计经验
 
-```bash
-# 一键分析股票
-python3 agents/quant_pdf.py <股票代码> <股票名称> [模拟年限]
+### 1. 渐进式三级结构
 
-# 示例
-python3 agents/quant_pdf.py sh.600900 长江电力      # 默认3年
-python3 agents/quant_pdf.py sh.600900 长江电力 5   # 5年模拟
-python3 agents/quant_pdf.py sz.000921 海信家电 10  # 10年模拟
 ```
+SKILL.md (入口) → workflow.md (流程) → reference/ (细节)
+```
+
+| 层级 | 内容 | 用户场景 |
+|------|------|----------|
+| **SKILL.md** | 一句话触发 + 快速示例 | 知道这个 skill 能做什么 |
+| **workflow.md** | 完整流程 + 判断逻辑 | 需要执行时参考步骤 |
+| **reference/** | 公式、诊断表、故障排查 | 遇到问题时查阅细节 |
+
+**Why:** 用户只需要知道自己该读哪一层，不需要被全部内容淹没。
 
 ---
 
-## 工作流概览
+### 2. 标准化的 Agent Prompt 模板
 
+每个子 Agent 的 system prompt 必须包含：
+
+```markdown
+# [Agent名称] - 最高指令
+
+> **核心原则**: [一句话总结该 Agent 最核心的目标]
+
+---
+
+## 🏛️ 智能体职责
+**我只负责 [核心职责描述]。**
+
+### 🔴 铁律
+1. [禁止事项1]
+2. [禁止事项2]
+
+### ⚙️ 业务工作流
+1. **步骤1** → [具体动作]
+2. **步骤2** → [具体动作]
+
+---
+
+## 📚 Skills 读取规则
+| 需要时读取 | 文件路径 | 用途 |
+|-----------|----------|------|
+| xxx | path | xxx |
+
+### 输入变量
+| 变量名 | 数据类型 | 处理规则 |
+|--------|----------|----------|
+| xxx | String | xxx |
+
+---
+
+## 🚀 输出格式约束
+{
+  "status": "success|error|circuit_broken",
+  ...
+}
 ```
-Phase 1 → Phase 2 → Phase 3 → Phase 4 → PDF报告
-数据获取   双耦合    估值     DRIP
-          验证    健康度   模拟
+
+**Why:** 标准化确保多 Agent协作时一致性，父 Agent 可以无脑加载。
+
+---
+
+### 3. 熔断 Auto-Fix 机制
+
+```markdown
+### 🔴 铁律
+- Auto-Fix 上限 5 次：连续失败 5 次自动停止，输出熔断报告
+
+### 🚀 输出格式约束
+{
+  "status": "circuit_broken",
+  "reason": "auto_fix_limit_exceeded",
+  "fix_count": 5
+}
 ```
 
-### Phase 1: 数据获取
+**Why:** 防止 Agent 陷入死循环，报错必须有明确的终止条件。
 
-**数据源：** baostock（A股首选，已验证稳定）
+---
 
-**获取数据：**
-- 股价：前复权收盘价 (P_t)
-- 分红：年度每股派息 (D_t)
-- EPS：每股收益
-- PE：市盈率 TTM
+### 4. 判断表优于流程图
 
-**波动率：** σ = std(ln(P_t / P_{t-1}))
-
-### Phase 2: 双耦合验证
-
-**两种耦合模式：**
-
-| 类型 | 特征 | 典型标的 |
-|------|------|---------|
-| **分红耦合** | 业绩好但初期少分红，分红增加时股价同步上涨 | 水电、基建、REITs |
-| **EPS耦合** | 分红少但 EPS 增长驱动股价 | 成长型公司、周期行业 |
-
-**三项测试：**
-
-| 测试 | 分红/股价 | EPS/股价 |
-|------|----------|---------|
-| CAGR 偏离度 | < 5% | < 5% |
-| R² 回归 | ≥ 0.6 | ≥ 0.6 |
-| Z-score | ≤ 1.5 | - |
-
-**通过条件：**
-- 任一耦合（分红或EPS）通过 + R² 达标 → 进入 Phase 4
-- 均未通过 → 判定"泡沫假象型"，跳过 DRIP 模拟
-
-**极端值处理：**
-- 首次拟合不通过 → 剔除 Z>2.5 的极端值 → 重试
-- 剔除后保留 < 70% → 回退到保留全部数据
-
-### Phase 3: 定性判决
-
-| 判决 | 条件 |
-|------|------|
+| 判决类型 | 条件 |
+|---------|------|
 | 完美耦合型 | 分红+EPS 双验证全通过 |
-| 分红耦合型 | 仅分红耦合通过 |
-| EPS 耦合型 | 仅 EPS 耦合通过 |
 | 泡沫假象型 | 未通过任一耦合测试 |
-| 估值还债/深坑型 | 未通过 CAGR，当前极度低估 |
-| 部分通过 | 未通过 Z-score 等条件 |
 
-### Phase 4: DRIP 模拟
-
-**模拟参数：**
-- g = 过去10年股价 CAGR
-- σ = 历史对数收益率标准差
-- Y = 最新股息率
-- D₀ = Y × P₀
-
-**模拟公式（每年迭代）：**
-1. P_{t+1} = P_t × exp((g - 0.5σ²) + σ × Z)
-2. D_{t+1} = D_t × (1 + g)
-3. S_{t+1} = S_t × (1 + D_{t+1} / P_{t+1})
-
-**输出指标：**
-- 中位数（50% 概率高于此值）
-- 翻倍概率（> 2.0x）
-- 亏损概率（< 1.0x）
-- VaR(5%) 极端回撤底线
+**Why:** 我执行时直接查表，不用在脑子里过一遍冗长文字逻辑。
 
 ---
 
-## 已验证案例
-
-| 股票 | 判决 | 中位数 | 备注 |
-|------|------|--------|------|
-| 长江电力 (sh.600900) | 完美耦合型 | 1.28x | 双验证全通过 |
-| 海信家电 (sz.000921) | 部分通过 | 1.12x | EPS耦合CAGR通过 |
-| 万华化学 (sh.600309) | 部分通过 | - | R²不足，化工周期影响 |
-| 中国银行 (sh.601988) | 部分通过 | - | CAGR通过但R²不足 |
-| 华侨城A (sz.000069) | 部分通过 | - | 多项测试未通过 |
-
----
-
-## 项目结构
+### 5. Skills 是「触发-执行」映射
 
 ```
-agents/
-├── quant_pdf.py              # 主分析脚本（PDF+7张图）
-├── phase1_data_fetch*.py    # 数据获取（baostock/akshare）
-├── phase2_analysis.py       # 耦合验证测试
-├── quant_workflow.py        # 完整流程整合
-├── generate_pdf*.py         # PDF生成（旧版）
-└── docs/                   # 文档
-    ├── SKILL.md            # 技能入口
-    ├── workflow.md         # 详细工作流
-    └── reference/          # 参考文档
-        ├── diagnosis.md    # 诊断表
-        ├── formula.md      # 公式与代码
-        └── troubleshooting.md # 故障排查
+用户: "分析股票 sh.600900"
+       ↓
+   匹配触发词 → 加载 quant_drip_agent_system.md
+       ↓
+   执行 Phase 1-4 → 输出 PDF
 ```
 
+**Skills 索引导航格式：**
+
+```markdown
+| Skill | 触发场景 | 说明 |
+|-------|----------|------|
+| DRIP量化 | A股量化分析、DRIP模拟 | [.../quant_drip_agent_system.md] |
+```
+
+**Why:** 用户不需要告诉我怎么做，只需要说目标。
+
 ---
 
-## 依赖
+### 6. 输入/输出必须类型严格
 
-- Python 3.9+
-- baostock（A股数据）
-- matplotlib（可视化）
-- scipy, numpy, pandas（统计分析）
-- minimax-pdf skill（PDF生成）
+```json
+{
+  "stock_code": "sh.600900",  // 必须包含交易所前缀
+  "years": 3,                  // int, 范围 1-10
+  "pdf_path": "/tmp/..."       // 可选，有默认值
+}
+```
+
+**Why:** Agent 协作时代码解析不能有二义性，类型错误直接报错而非静默适配。
 
 ---
 
-## 诊断速查
+### 7. 职责单一原则
 
-**分红耦合诊断：**
-- CAGR✅ + R²✅ → 分红与股价完美耦合
-- CAGR❌ + 分红>股价 → 消化历史高估值或留存利润
-- CAGR❌ + 股价>分红 → 估值泡沫风险
+一个 Agent 只做一件事：
 
-**EPS耦合诊断：**
-- CAGR✅ + R²✅ → EPS与股价完美耦合
-- CAGR❌ + EPS>股价 → 盈利未反映到股价
-- CAGR❌ + 股价>EPS → 定价脱离业绩
+| Agent | 职责 |
+|-------|------|
+| quant-drip-agent | DRIP 量化分析 |
+| maker-node | 代码生成 + TDD |
+| checker-node | 代码审查 |
 
-**Z-score诊断：**
-- Z < -1 → 严重低估
-- -1 ≤ Z < 0 → 偏低估
-- 0 ≤ Z < 1.5 → 正常
-- Z ≥ 1.5 → 偏高估
+**Why:** 职责越单一，复用性越高，组合越灵活。
+
+---
+
+### 8. 金融公式必须与代码严格对应
+
+workflow.md:
+```
+P_{t+1} = P_t × exp((g - 0.5σ²) + σ × Z)
+```
+
+reference/formula.md:
+```python
+P_next = P_current * np.exp((g - 0.5 * sigma**2) + sigma * Z)
+```
+
+**Why:** 不同人实现出来的结果必须一致，不能有解读空间。
+
+---
+
+## 🏗️ 子 Agent 封装检查清单
+
+创建新的子 Agent 时，对照检查：
+
+- [ ] SKILL.md 存在且包含触发词
+- [ ] system prompt 包含 Quote / 职责 / 铁律 / 工作流
+- [ ] 输入/输出有 JSON Schema 定义
+- [ ] 错误处理有熔断机制（上限 5 次）
+- [ ] 工作流引用 reference/ 中的公式和诊断表
+- [ ] 在父级 CLAUDE.md Skills 索引中注册
+
+---
+
+## 📚 Skills 索引发射窗
+
+| Skill | 路径 |
+|-------|------|
+| DRIP量化Agent | [skills/quant_drip_agent_system.md](skills/quant_drip_agent_system.md) |
+| DRIP工作流 | [skills/quant-drip-analysis/workflow.md](skills/quant-drip-analysis/workflow.md) |
+| DRIP诊断表 | [skills/quant-drip-analysis/reference/diagnosis.md](skills/quant-drip-analysis/reference/diagnosis.md) |
+| DRIP公式 | [skills/quant-drip-analysis/reference/formula.md](skills/quant-drip-analysis/reference/formula.md) |
