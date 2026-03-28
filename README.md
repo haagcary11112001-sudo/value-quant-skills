@@ -184,18 +184,19 @@ Z-score：Z=-0.91 ✅
 
 ```
 ├── README.md                              # 本文件
-├── CLAUDE.md                              # Agent 系统指令
+├── CLAUDE.md                              # Agent 使用索引
 ├── agents/
 │   ├── quant_pdf.py                      # 主分析脚本
-│   ├── phase1_data_fetch*.py             # 数据获取
-│   └── phase2_analysis.py                # 耦合验证
-└── skills/quant-drip-analysis/           # 可安装技能包
-    ├── SKILL.md                          # 技能入口
-    ├── workflow.md                       # 详细工作流
-    └── reference/                        # 参考文档
-        ├── diagnosis.md                  # 诊断表
-        ├── formula.md                    # 公式与代码
-        └── troubleshooting.md           # 故障排查
+│   └── phase1_data_fetch*.py            # 数据获取
+└── skills/
+    ├── quant_drip_agent_system.md        # Agent 系统提示词
+    └── quant-drip-analysis/              # 可安装技能包
+        ├── SKILL.md                      # 技能入口
+        ├── workflow.md                   # 详细工作流
+        └── reference/                    # 参考文档
+            ├── diagnosis.md              # 诊断表
+            ├── formula.md                # 公式与代码
+            └── troubleshooting.md       # 故障排查
 ```
 
 ---
