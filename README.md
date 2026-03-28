@@ -1,13 +1,16 @@
-# quant-drip-agent
+# value-quant-skills
 
 A股量化分析工具 — 业绩-股价收敛测试与 DRIP 红利再投资蒙特卡洛模拟
+
+[![GitHub release](https://img.shields.io/github/v/release/haagcary11112001-sudo/value-quant-skills)](https://github.com/haagcary11112001-sudo/value-quant-skills/releases)
 
 ## 功能特性
 
 - **四阶段量化分析**：数据获取 → 双耦合验证 → 估值健康度 → DRIP 模拟
 - **双耦合验证**：同时检验分红-股价、EPS-股价耦合度
+- **Cook's Distance 极端值剔除**：自动识别并剔除对拟合影响最大的异常年份
 - **蒙特卡洛模拟**：10,000 次模拟，预测 DRIP 策略收益分布
-- **一键 PDF 报告**：自动生成 7 张可视化图表 + 完整分析报告
+- **一键 PDF 报告**：自动生成 7 张可视化图表 + 完整分析报告，结论前置显示
 
 ---
 
@@ -24,7 +27,7 @@ A股量化分析工具 — 业绩-股价收敛测试与 DRIP 红利再投资蒙�
 
 ```bash
 # 克隆到本地 skills 目录
-git clone https://github.com/haagcary11112001-sudo/valuestocks-agent.git /path/to/your/skills/quant-drip-analysis
+git clone https://github.com/haagcary11112001-sudo/value-quant-skills.git /path/to/your/skills/quant-drip-analysis
 ```
 
 ---
@@ -106,9 +109,11 @@ python3 agents/quant_pdf.py sz.000921 海信家电 10  # 10年模拟
 - 任一耦合（分红或EPS）通过 + R² 达标 → 进入 DRIP 模拟
 - 均未通过 → 判定为"泡沫假象型"，不执行 DRIP 模拟
 
-**极端值处理**：
-- 首次拟合不通过 → 剔除极端值（Z>2.5）后重试
-- 剔除后保留数据 < 70% → 回退到保留全部数据
+**极端值处理（Cook's Distance）**：
+- 首次拟合不通过 → 计算 Cook's Distance，剔除影响最大的点
+- 剔除阈值：4/n（n=样本数），超过此值视为强影响点
+- 剔除上限：10年最多删2年，5年最多删1年，少于5年不得删除
+- 剔除后重新计算 CAGR 和 R²
 
 ### Phase 3: 定性判决
 
@@ -163,14 +168,14 @@ Z-score：Z=-0.13 ✅
 3年 DRIP 中位数：1.28x
 ```
 
-### 海信家电 (sz.000921) — 部分通过
+### 海信家电 (sz.000921) — EPS耦合型
 
 ```
-分红耦合：CAGR 偏离 15.97%，R²=0.51 ❌
-EPS 耦合：CAGR 偏离 2.80% ✅，R²=0.59 ❌
+分红耦合：CAGR 偏离 18.35%，R²=0.91 ✅（Cook's D剔除1个极端值后）
+EPS 耦合：CAGR 偏离 3.20% ✅，R²=0.80 ✅（Cook's D剔除1个极端值后）
 Z-score：Z=-0.91 ✅
-判决：部分通过
-3年 DRIP 中位数：1.12x（高波动 σ=35.89%）
+判决：EPS耦合型
+3年 DRIP 中位数：1.17x（高波动 σ=35.89%）
 ```
 
 ---
