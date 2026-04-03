@@ -54,11 +54,11 @@ def fetch_stock_data_akshare(stock_code: str, years: int = 10) -> tuple:
     print("   - EPS数据...", end=" ")
     try:
         symbol = stock_code.replace(".SH", "").replace(".SZ", "")
-        df_fin = ak.stock_financial_analysis_indicator(symbol=symbol, start_year=str(start_year), end_year=str(end_year))
+        df_fin = ak.stock_financial_analysis_indicator(symbol=symbol, start_year=str(start_year))
         # 找到每股收益列
         eps_col = None
         for col in df_fin.columns:
-            if '基本每股收益' in col or 'EPS' in col.upper():
+            if '每股收益' in col and '调整' not in col:
                 eps_col = col
                 break
         if eps_col:
@@ -81,17 +81,13 @@ def fetch_stock_data_akshare(stock_code: str, years: int = 10) -> tuple:
     print("   - 分红数据...", end=" ")
     try:
         symbol = stock_code.replace(".SH", "").replace(".SZ", "")
-        # 使用 stock_a_lg_indicator 获取分红数据
-        df_div = ak.stock_a_lg_indicator(symbol=symbol)
-        # 找每股股息列
-        div_col = None
-        for col in df_div.columns:
-            if '每股派息' in col or '股息' in col or '分红' in col:
-                div_col = col
-                break
-        if div_col:
-            df_div['年份'] = pd.to_datetime(df_div['日期']).dt.year
-            annual_div = df_div.groupby('年份')[div_col].last().reset_index()
+        # 使用 stock_dividend_cninfo 获取分红数据
+        df_div = ak.stock_dividend_cninfo(symbol=symbol)
+        # 找到派息比例列和报告时间 (格式如 "2024年报")
+        if '派息比例' in df_div.columns and '报告时间' in df_div.columns:
+            # 从 "2024年报" 格式中提取年份
+            df_div['year'] = df_div['报告时间'].str.extract(r'(\d{4})').astype(int)
+            annual_div = df_div.groupby('year')['派息比例'].last().reset_index()
             annual_div.columns = ['year', 'dividend']
             annual_div = annual_div[(annual_div['year'] >= start_year) & (annual_div['year'] <= end_year)]
             results['dividend'] = annual_div

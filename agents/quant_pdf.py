@@ -198,6 +198,12 @@ def run_analysis():
 
     # 合并数据 (EPS)
     merged_eps = df_price.merge(df_eps, on='year', how='inner')
+
+    # 过滤掉负值和零值EPS（无法取对数）
+    merged_eps = merged_eps[merged_eps['eps'] > 0]
+    if len(merged_eps) < 3:
+        print("   警告: 有效EPS数据少于3年，DRIP分析可能不准确")
+
     prices_eps = merged_eps['price'].values
     eps_values = merged_eps['eps'].values
     n_eps = len(prices_eps)

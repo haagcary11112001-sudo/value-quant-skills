@@ -99,8 +99,8 @@ python3 agents/quant_pdf.py sz.000921 海信家电 10  # 10年模拟
 
 | 测试 | 标准 | 含义 |
 |------|------|------|
-| 分红 CAGR 偏离度 | \|CAGR_P - CAGR_D\| < 5% | 股价与分红增长同步性 |
-| EPS CAGR 偏离度 | \|CAGR_P - CAGR_EPS\| < 5% | 股价与盈利增长同步性 |
+| 分红 CAGR 偏离度 | |CAGR_P - CAGR_D| < 5% | 股价与分红增长同步性 |
+| EPS CAGR 偏离度 | |CAGR_P - CAGR_EPS| < 5% | 股价与盈利增长同步性 |
 | 分红 R² 回归 | R² ≥ 0.6 | 分红对股价的解释力 |
 | EPS R² 回归 | R² ≥ 0.6 | EPS 对股价的解释力 |
 | Z-score | Z ≤ 1.5 | 当前估值在历史中的位置 |
